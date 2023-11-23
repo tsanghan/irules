@@ -499,3 +499,262 @@ Lab7.2b
 when HTTP_REQUEST {
   HTTP::redirect https://[getfield [HTTP::host] ":" 1][HTTP::uri]
 }
+
+Lab8.1a
+=======
+when HTTP_REQUEST {
+  if { [IP::client_addr] ne "10.10.X.28" } {
+    snat automap
+  }
+  if { ![HTTP::header exists "X-Forwarded-For"] } {
+    HTTP::header insert "X-Forwarded-For" [IP::client_addr]
+  }
+}
+
+Lab8.1c
+=======
+when HTTP_REQUEST {
+  if { [IP::client_addr] ne "10.10.X.28" } {
+    snat automap
+  }
+  if { ![HTTP::header exists "X-Forwarded-For"] } {
+    # Client did not include an XFF header, so we insert one for them
+    HTTP::header insert "X-Forwarded-For" [IP::client_addr]
+    # If no XFF header, client must be in Client Group 1 or 2.
+    # Disable compression offload to allow server to send compressed response.
+    COMPRESS::disable
+  } else {
+    # If XFF header is present, client must in Client Group 3.
+    # Enable compression offload to prevent server sending compressed response.
+    COMPRESS::enable
+  }
+}
+
+Lab8.1d
+=======
+when HTTP_REQUEST {
+  # Clients using Internet Explorer (as indicated by the string "Trident" in the
+  # HTTP User-Agent header) must connect using HTTPS, and are redirected. All others
+  # will be load balanced to pool P1-3
+  if { [HTTP::header User-Agent] contains "Trident" } {
+    HTTP::redirect "https://lab8.f5trn.com"
+  } else {
+    pool P1-3
+  }
+}
+
+when HTTP_REQUEST {
+  # Clients using Firefox must connect using HTTP, and are redirected. All others
+  # will be load balanced to pool P1-3SSL
+  if { [HTTP::header User-Agent] contains "Firefox" && not ([HTTP::header User-Agent] contains "Opera") } {
+    HTTP::redirect "http://lab8.f5trn.com"
+  } else {
+    pool P1-3SSL
+  }
+}
+
+Lab8.1e
+=======
+when HTTP_REQUEST priority 1 {
+  HTTP::header replace User-Agent "Trident"
+  log local0. "Testing User Agent [HTTP::header User-Agent]"
+}
+
+Lab9.1a
+=======
+when HTTP_RESPONSE {
+  # serve an iFile when http status is 404.
+  if { [HTTP::status] == 404 } {
+    HTTP::respond 200 content [ifile get "sorry.html"]
+  }
+}
+
+Lab9.1b
+=======
+when HTTP_REQUEST {
+  if { [HTTP::uri] contains "sorry.jpg" } {
+    HTTP::respond 200 content [ifile get "sorry.jpg"]
+  }
+}
+when HTTP_RESPONSE {
+  # serve an iFile when http status is 404.
+  if { [HTTP::status] == 404 } {
+    HTTP::respond 200 content [ifile get "sorry.html"]
+  }
+}
+
+Lab9.2a
+=======
+when HTTP_REQUEST {
+  # Check the UA query parameter to see if its value is 1-4 (inclusive)
+  # Replace the User-Agent header if in range
+    switch [URI::query [HTTP::uri] ua] {
+      1 { HTTP::header replace "User-Agent" "Trident" }
+      2 { HTTP::header replace "User-Agent" "Firefox" }
+      3 { HTTP::header replace "User-Agent" "Chrome" }
+      4 { HTTP::header replace "User-Agent" "Safari" }
+  }
+}
+
+Lab9.2b
+=======
+when HTTP_REQUEST {
+  # Check to see if UA query parameter was specified with a value
+  if { [URI::query [HTTP::uri] ua] != "" } {
+    # UA parameter with value was specified so
+    # check to see if matches UserAgent data group key
+    if { [class match [URI::query [HTTP::uri] ua] equals UserAgent] } {
+      # UA parameter value matches UserAgent list so
+      # replace User-Agent header with UserAgent data group value
+      HTTP::header replace "User-Agent" [class match -value [URI::query
+      [HTTP::uri] ua] equals UserAgent]
+    }
+  }
+}
+
+Lab9.2c
+=======
+when HTTP_REQUEST {
+  # Save the current URI for later modification
+  set newURI [HTTP::uri]
+  # If a UA query parameter with a value was specified,
+  # see if it matches an entry in the UserAgent data group
+  if { [URI::query [HTTP::uri] ua] != "" } {
+    if { [class match [URI::query [HTTP::uri] ua] equals UserAgent] } {
+      # UA value specified matches. Replace User-Agent header with value
+      HTTP::header replace "User-Agent" [class match -value [URI::query [HTTP::uri] ua] equals UserAgent]
+    }
+    # Remove the UA query parameter and its value from the saved URI
+    set newURI [string map [list "ua=[URI::query [HTTP::uri] ua]" ""] [HTTP::uri]]
+    # Clean up the URI, removing any UA parameter with no value
+    # and eliminating leftover parameter separators
+    set newURI [string map {"ua=" ""} $newURI]
+    set newURI [string map {"?&" "?"} $newURI]
+    set newURI [string map {"&&" "&"} $newURI]
+    set newURILen [expr {[string length $newURI]-1}]
+    # Remove any trailing ampersand (&) or question mark (?) from the modified URI
+    if { [string range $newURI $newURILen end] equals "&" || [string range $newURI $newURILen end] equals "?" } {
+      set newURI [substr $newURI 0 $newURILen]
+    }
+    # Log the modified URI and then replace it in the payload
+    log local0. $newURI
+    HTTP::uri $newURI
+  }
+}
+
+Lab10.1a
+========
+when HTTP_REQUEST {
+  if { [HTTP::uri] eq "/stats" } {
+    HTTP::respond 200 content "<html>
+    <head><title>Statistics Page</title></head>
+    <body><h2>File Extension Counters</h2>
+    <p>JPEG Count: [STATS::get file_type_stats jpg]</p>
+    <p>GIF Count: [STATS::get file_type_stats gif]</p>
+    <p>HTML Count: [STATS::get file_type_stats html]</p>
+    <p>PNG Count: [STATS::get file_type_stats png]</p>
+    <p>CSS Count: [STATS::get file_type_stats css]</p>
+    <p>JS Count: [STATS::get file_type_stats js]</p>
+    <p>CGI Count: [STATS::get file_type_stats cgi]</p>
+    <p>Other Count: [STATS::get file_type_stats other]</p>
+    </body>
+    </html>" "Connection" "close"
+  } elseif { [HTTP::uri] eq "/reset" } {
+    STATS::set file_type_stats jpg 0
+    STATS::set file_type_stats gif 0
+    STATS::set file_type_stats cgi 0
+    STATS::set file_type_stats html 0
+    STATS::set file_type_stats png 0
+    STATS::set file_type_stats css 0
+    STATS::set file_type_stats js 0
+    STATS::set file_type_stats other 0
+    HTTP::respond 200 content "<html>
+    <head><title>Statistics Page</title></head>
+    <body><h2>File Extension Counters</h2>
+    <p><b>Counters successfully reset</b></p>
+    <p>JPEG Count: [STATS::get file_type_stats jpg]</p>
+    <p>GIF Count: [STATS::get file_type_stats gif]</p>
+    <p>HTML Count: [STATS::get file_type_stats html]</p>
+    <p>PNG Count: [STATS::get file_type_stats png]</p>
+    <p>CSS Count: [STATS::get file_type_stats css]</p>
+    <p>JS Count: [STATS::get file_type_stats js]</p>
+    <p>CGI Count: [STATS::get file_type_stats cgi]</p>
+    <p>Other Count: [STATS::get file_type_stats other]</p>
+    </body>
+    </html>" "Connection" "close"
+  } elseif { !([HTTP::uri] ends_with ".ico") } {
+    set ext [string tolower [HTTP::path]]
+    if { $ext ends_with ".jpg" } { STATS::incr file_type_stats jpg }
+    elseif { $ext ends_with ".gif" } { STATS::incr file_type_stats gif }
+    elseif { $ext ends_with ".cgi" } { STATS::incr file_type_stats cgi }
+    elseif { $ext ends_with ".html"} { STATS::incr file_type_stats html }
+    elseif { $ext ends_with ".png" } { STATS::incr file_type_stats png }
+    elseif { $ext ends_with ".css" } { STATS::incr file_type_stats css }
+    elseif { $ext ends_with ".js" } { STATS::incr file_type_stats js }
+    else { STATS::incr file_type_stats other }
+  }
+}
+
+Lab10.1b
+========
+when HTTP_REQUEST {
+  if { [HTTP::uri] eq "/stats" } {
+    HTTP::respond 200 content "<html><head><title>Statistics Page</title></head>
+    <body><h2>File Extension Counters</h2>
+    <p>JPEG Count: [ISTATS::get "ltm.virtual [virtual name] counter jpg"]</p>
+    <p>GIF Count: [ISTATS::get "ltm.virtual [virtual name] counter gif"]</p>
+    <p>HTML Count: [ISTATS::get "ltm.virtual [virtual name] counter html"]</p>
+    <p>PNG Count: [ISTATS::get "ltm.virtual [virtual name] counter png"]</p>
+    <p>CSS Count: [ISTATS::get "ltm.virtual [virtual name] counter css"]</p>
+    <p>JS Count: [ISTATS::get "ltm.virtual [virtual name] counter js"]</p>
+    <p>CGI Count: [ISTATS::get "ltm.virtual [virtual name] counter cgi"]</p>
+    <p>Other Count: [ISTATS::get "ltm.virtual [virtual name] counter
+    other"]</p>
+    </body>
+    </html>" "Connection" "close"
+  } elseif { [HTTP::uri] eq "/reset" } {
+    ISTATS::set "ltm.virtual [virtual name] counter jpg" 0
+    ISTATS::set "ltm.virtual [virtual name] counter gif" 0
+    ISTATS::set "ltm.virtual [virtual name] counter cgi" 0
+    ISTATS::set "ltm.virtual [virtual name] counter html" 0
+    ISTATS::set "ltm.virtual [virtual name] counter png" 0
+    ISTATS::set "ltm.virtual [virtual name] counter css" 0
+    ISTATS::set "ltm.virtual [virtual name] counter js" 0
+    ISTATS::set "ltm.virtual [virtual name] counter png" 0
+    ISTATS::set "ltm.virtual [virtual name] counter other" 0
+    HTTP::respond 200 content "<html>
+    <head><title>Statistics Page</title></head>
+    <body><h2>File Extension Counters</h2>
+    <p><b>Counters successfully reset</b></p>
+    <p>JPEG Count: [ISTATS::get "ltm.virtual [virtual name] counter jpg"]</p>
+    <p>GIF Count: [ISTATS::get "ltm.virtual [virtual name] counter gif"]</p>
+    <p>HTML Count: [ISTATS::get "ltm.virtual [virtual name] counter html"]</p>
+    <p>PNG Count: [ISTATS::get "ltm.virtual [virtual name] counter png"]</p>
+    <p>CSS Count: [ISTATS::get "ltm.virtual [virtual name] counter css"]</p>
+    <p>JS Count: [ISTATS::get "ltm.virtual [virtual name] counter js"]</p>
+    <p>CGI Count: [ISTATS::get "ltm.virtual [virtual name] counter cgi"]</p>
+    <p>Other Count: [ISTATS::get "ltm.virtual [virtual name] counter
+    other"]</p>
+    </body>
+    </html>" "Connection" "close"
+  } elseif { !([HTTP::uri] ends_with ".ico") } {
+    set ext [string tolower [HTTP::path]]
+    if { $ext ends_with ".jpg" } {
+      ISTATS::incr "ltm.virtual [virtual name] counter jpg" 1
+    } elseif { $ext ends_with ".gif" } {
+      ISTATS::incr "ltm.virtual [virtual name] counter gif" 1
+    } elseif { $ext ends_with ".cgi" } {
+      ISTATS::incr "ltm.virtual [virtual name] counter cgi" 1
+    } elseif { $ext ends_with ".html"} {
+      ISTATS::incr "ltm.virtual [virtual name] counter html" 1
+    } elseif { $ext ends_with ".png" } {
+      ISTATS::incr "ltm.virtual [virtual name] counter png" 1
+    } elseif { $ext ends_with ".css" } {
+      ISTATS::incr "ltm.virtual [virtual name] counter css" 1
+    } elseif { $ext ends_with ".js" } {
+      ISTATS::incr "ltm.virtual [virtual name] counter js" 1
+    } else {
+      ISTATS::incr "ltm.virtual [virtual name] counter other" 1
+    }
+  }
+}
